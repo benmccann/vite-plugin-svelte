@@ -103,7 +103,7 @@ These options are specific to the Svelte compiler and are generally shared acros
   An array of preprocessors to transform the Svelte source code before compilation.
 
   **Example:**
-	
+
   ```js
   // svelte.config.js
   import sveltePreprocess from 'svelte-preprocess';
@@ -112,7 +112,7 @@ These options are specific to the Svelte compiler and are generally shared acros
     preprocess: [
       sveltePreprocess({ typescript: true })]
     ]
-  };
+  }
   ```
 
 ### extensions
