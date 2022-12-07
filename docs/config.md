@@ -103,18 +103,16 @@ These options are specific to the Svelte compiler and are generally shared acros
   An array of preprocessors to transform the Svelte source code before compilation.
 
   **Example:**
-
+	
   ```js
-  // vite.config.js
+  // svelte.config.js
   import sveltePreprocess from 'svelte-preprocess';
 
-  export default defineConfig({
-    plugins: [
-      svelte({
-        preprocess: [sveltePreprocess({ typescript: true })]
-      })
+  export default {
+    preprocess: [
+      sveltePreprocess({ typescript: true })]
     ]
-  });
+  };
   ```
 
 ### extensions
