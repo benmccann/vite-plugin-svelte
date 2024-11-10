@@ -6,11 +6,12 @@ import { log } from './log.js';
  * utility function to compile ?raw and ?direct requests in load hook
  *
  * @param {import('../types/id.d.ts').SvelteRequest} svelteRequest
+ * @param {import('../types/compile.d.ts').PreprocessSvelte} preprocessSvelte
  * @param {import('../types/compile.d.ts').CompileSvelte} compileSvelte
  * @param {import('../types/options.d.ts').ResolvedOptions} options
  * @returns {Promise<string>}
  */
-export async function loadRaw(svelteRequest, compileSvelte, options) {
+export async function loadRaw(svelteRequest, preprocessSvelte, compileSvelte, options) {
 	const { id, filename, query } = svelteRequest;
 
 	// raw svelte subrequest, compile on the fly and return requested subpart
@@ -19,7 +20,18 @@ export async function loadRaw(svelteRequest, compileSvelte, options) {
 	try {
 		//avoid compileSvelte doing extra ssr stuff unless requested
 		svelteRequest.ssr = query.compilerOptions?.generate === 'server';
-		compileData = await compileSvelte(svelteRequest, source, {
+		const preprocessed = await preprocessSvelte(svelteRequest, source, {
+			...options,
+			// don't use dynamic vite-plugin-svelte defaults here to ensure stable result between ssr,dev and build
+			compilerOptions: {
+				dev: false,
+				css: 'external',
+				hmr: false,
+				...svelteRequest.query.compilerOptions
+			},
+			emitCss: true
+		});
+		compileData = await compileSvelte(svelteRequest, source, preprocessed, {
 			...options,
 			// don't use dynamic vite-plugin-svelte defaults here to ensure stable result between ssr,dev and build
 			compilerOptions: {

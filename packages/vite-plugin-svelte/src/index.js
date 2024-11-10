@@ -3,7 +3,7 @@ import process from 'node:process';
 import { svelteInspector } from '@sveltejs/vite-plugin-svelte-inspector';
 import { handleHotUpdate } from './handle-hot-update.js';
 import { log, logCompilerWarnings } from './utils/log.js';
-import { createCompileSvelte } from './utils/compile.js';
+import { createCompileSvelte, createPreprocessSvelte } from './utils/compile.js';
 import { buildIdParser, buildModuleIdParser } from './utils/id.js';
 import {
 	buildExtraViteConfig,
@@ -38,6 +38,8 @@ export function svelte(inlineOptions) {
 	let options;
 	/** @type {import('vite').ResolvedConfig} */
 	let viteConfig;
+	/** @type {import('./types/compile.d.ts').PreprocessSvelte} */
+	let preprocessSvelte;
 	/** @type {import('./types/compile.d.ts').CompileSvelte} */
 	let compileSvelte;
 	/** @type {import('./types/plugin-api.d.ts').PluginAPI} */
@@ -68,6 +70,7 @@ export function svelte(inlineOptions) {
 				options = resolveOptions(options, config, cache);
 				patchResolvedViteConfig(config, options);
 				requestParser = buildIdParser(options);
+				preprocessSvelte = createPreprocessSvelte();
 				compileSvelte = createCompileSvelte();
 				viteConfig = config;
 				// TODO deep clone to avoid mutability from outside?
@@ -96,7 +99,7 @@ export function svelte(inlineOptions) {
 				if (svelteRequest) {
 					const { filename, query, raw } = svelteRequest;
 					if (raw) {
-						const code = await loadRaw(svelteRequest, compileSvelte, options);
+						const code = await loadRaw(svelteRequest, preprocessSvelte, compileSvelte, options);
 						// prevent vite from injecting sourcemaps in the results.
 						return {
 							code,
@@ -145,7 +148,8 @@ export function svelte(inlineOptions) {
 				}
 				let compileData;
 				try {
-					compileData = await compileSvelte(svelteRequest, code, options);
+					const preprocessed = await preprocessSvelte(svelteRequest, code, options);
+					compileData = await compileSvelte(svelteRequest, code, preprocessed, options);
 				} catch (e) {
 					cache.setError(svelteRequest, e);
 					throw toRollupError(e, options);

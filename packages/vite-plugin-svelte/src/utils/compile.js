@@ -17,20 +17,78 @@ const scriptLangRE =
 	/<!--[^]*?-->|<script (?:[^>]*|(?:[^=>'"/]+=(?:"[^"]*"|'[^']*'|[^>\s]+)\s+)*)lang=["']?([^"' >]+)["']?[^>]*>/g;
 
 /**
+ * @returns {import('../types/compile.d.ts').PreprocessSvelte}
+ */
+export function createPreprocessSvelte() {
+	/** @type {import('../types/compile.d.ts').PreprocessSvelte} */
+	return async function preprocessSvelte(svelteRequest, code, options) {
+		const { filename, ssr, raw } = svelteRequest;
+
+		/** @type {string[]} */
+		const dependencies = [];
+		/** @type {import('svelte/compiler').Warning[]} */
+		const warnings = [];
+
+		/** @type {import('svelte/compiler').CompileOptions} */
+		const compileOptions = {
+			...options.compilerOptions,
+			filename,
+			generate: ssr ? 'server' : 'client'
+		};
+
+		let preprocessed;
+		const preprocessors = getPreprocessors(options, compileOptions);
+		if (preprocessors) {
+			try {
+				preprocessed = await svelte.preprocess(code, preprocessors, { filename }); // full filename here so postcss works
+			} catch (e) {
+				e.message = `Error while preprocessing ${filename}${e.message ? ` - ${e.message}` : ''}`;
+				throw e;
+			}
+
+			if (preprocessed.dependencies?.length) {
+				const checked = checkPreprocessDependencies(filename, preprocessed.dependencies);
+				if (checked.warnings.length) {
+					warnings.push(...checked.warnings);
+				}
+				if (checked.dependencies.length) {
+					dependencies.push(...checked.dependencies);
+				}
+			}
+
+			if (preprocessed.map) compileOptions.sourcemap = preprocessed.map;
+		}
+		if (typeof preprocessed?.map === 'object') {
+			mapToRelative(preprocessed?.map, filename);
+		}
+		if (raw && svelteRequest.query.type === 'preprocessed') {
+			// @ts-expect-error shortcut
+			return /** @type {import('../types/compile.d.ts').CompileData} */ {
+				preprocessed: preprocessed ?? { code }
+			};
+		}
+		const finalCode = preprocessed ? preprocessed.code : code;
+
+		return {
+			preprocessed,
+			code: finalCode,
+			warnings,
+			dependencies
+		};
+	};
+}
+
+/**
  * @returns {import('../types/compile.d.ts').CompileSvelte}
  */
 export function createCompileSvelte() {
 	/** @type {import('../types/vite-plugin-svelte-stats.d.ts').StatCollection | undefined} */
 	let stats;
-	const devStylePreprocessor = createInjectScopeEverythingRulePreprocessorGroup();
+
 	/** @type {import('../types/compile.d.ts').CompileSvelte} */
-	return async function compileSvelte(svelteRequest, code, options) {
+	return async function compileSvelte(svelteRequest, code, preprocessResult, options) {
 		const { filename, normalizedFilename, cssId, ssr, raw } = svelteRequest;
 		const { emitCss = true } = options;
-		/** @type {string[]} */
-		const dependencies = [];
-		/** @type {import('svelte/compiler').Warning[]} */
-		const warnings = [];
 
 		if (options.stats) {
 			if (options.isBuild) {
@@ -68,51 +126,14 @@ export function createCompileSvelte() {
 			compileOptions.cssHash = () => hash;
 		}
 
-		let preprocessed;
-		let preprocessors = options.preprocess;
-		if (!options.isBuild && options.emitCss && compileOptions.hmr) {
-			// inject preprocessor that ensures css hmr works better
-			if (!Array.isArray(preprocessors)) {
-				preprocessors = preprocessors
-					? [preprocessors, devStylePreprocessor]
-					: [devStylePreprocessor];
-			} else {
-				preprocessors = preprocessors.concat(devStylePreprocessor);
-			}
-		}
-		if (preprocessors) {
-			try {
-				preprocessed = await svelte.preprocess(code, preprocessors, { filename }); // full filename here so postcss works
-			} catch (e) {
-				e.message = `Error while preprocessing ${filename}${e.message ? ` - ${e.message}` : ''}`;
-				throw e;
-			}
+		/** @type {string[]} */
+		const dependencies = preprocessResult.dependencies;
+		/** @type {import('svelte/compiler').Warning[]} */
+		const warnings = preprocessResult.warnings;
 
-			if (preprocessed.dependencies?.length) {
-				const checked = checkPreprocessDependencies(filename, preprocessed.dependencies);
-				if (checked.warnings.length) {
-					warnings.push(...checked.warnings);
-				}
-				if (checked.dependencies.length) {
-					dependencies.push(...checked.dependencies);
-				}
-			}
-
-			if (preprocessed.map) compileOptions.sourcemap = preprocessed.map;
-		}
-		if (typeof preprocessed?.map === 'object') {
-			mapToRelative(preprocessed?.map, filename);
-		}
-		if (raw && svelteRequest.query.type === 'preprocessed') {
-			// @ts-expect-error shortcut
-			return /** @type {import('../types/compile.d.ts').CompileData} */ {
-				preprocessed: preprocessed ?? { code }
-			};
-		}
-		const finalCode = preprocessed ? preprocessed.code : code;
 		const dynamicCompileOptions = await options?.dynamicCompileOptions?.({
 			filename,
-			code: finalCode,
+			code: preprocessResult.code,
 			compileOptions
 		});
 		if (dynamicCompileOptions && log.debug.enabled) {
@@ -132,7 +153,7 @@ export function createCompileSvelte() {
 		/** @type {import('svelte/compiler').CompileResult} */
 		let compiled;
 		try {
-			compiled = svelte.compile(finalCode, { ...finalCompileOptions, filename });
+			compiled = svelte.compile(preprocessResult.code, { ...finalCompileOptions, filename });
 			// patch output with partial accept until svelte does it
 			// TODO remove later
 			if (
@@ -145,7 +166,7 @@ export function createCompileSvelte() {
 				);
 			}
 		} catch (e) {
-			enhanceCompileError(e, code, preprocessors);
+			enhanceCompileError(e, code, getPreprocessors(options, compileOptions));
 			throw e;
 		}
 
@@ -185,7 +206,28 @@ export function createCompileSvelte() {
 			compiled,
 			ssr,
 			dependencies,
-			preprocessed: preprocessed ?? { code }
+			preprocessed: preprocessResult.preprocessed ?? { code }
 		};
 	};
+}
+
+/**
+ * @param {Partial<import('../types/options.d.ts').ResolvedOptions>} options
+ * @param {import('svelte/compiler').CompileOptions} compileOptions
+ * @returns
+ */
+function getPreprocessors(options, compileOptions) {
+	const devStylePreprocessor = createInjectScopeEverythingRulePreprocessorGroup();
+	let preprocessors = options.preprocess;
+	if (!options.isBuild && options.emitCss && compileOptions.hmr) {
+		// inject preprocessor that ensures css hmr works better
+		if (!Array.isArray(preprocessors)) {
+			preprocessors = preprocessors
+				? [preprocessors, devStylePreprocessor]
+				: [devStylePreprocessor];
+		} else {
+			preprocessors = preprocessors.concat(devStylePreprocessor);
+		}
+	}
+	return preprocessors;
 }
